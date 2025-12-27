@@ -187,12 +187,12 @@ loader.load(
             fragmentShader: waterFragmentShader,
         };
 
-        const mirrorGeometry = new THREE.CircleGeometry(40, 64);
+        const mirrorGeometry = new THREE.CircleGeometry(50, 64);
         groundMirror = new Reflector(mirrorGeometry, {
             shader: customShader,
             clipBias: 0.003,
-            textureWidth: window.innerWidth * window.devicePixelRatio,
-            textureHeight: window.innerHeight * window.devicePixelRatio,
+            textureWidth: window.innerWidth,
+            textureHeight: window.innerHeight,
             color: 0x0077be, // Water blue color
         });
 
