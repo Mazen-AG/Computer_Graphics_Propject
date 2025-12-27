@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
 import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
+import { WaterRefractionShader } from 'three/examples/jsm/shaders/WaterRefractionShader.js';
 
 const buildingURL = new URL('../model/little_house_in_lotus_island/test1.glb', import.meta.url);
 
@@ -22,7 +23,7 @@ const renderer = new THREE.WebGLRenderer({antialias: true});
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-
+renderer.setClearColor(0xffffff)
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(
@@ -51,8 +52,7 @@ scene.add(axesHelper);
 
 
 /* ---------------------- SHADERS ---------------------- */
-// main.js
-const waterVertexShader = /* glsl */`
+const waterVertexShader = /* glsl */ `
     uniform mat4 textureMatrix;
     varying vec4 vUv;
 
@@ -66,25 +66,30 @@ const waterVertexShader = /* glsl */`
     }
 `;
 
-const waterFragmentShader = /* glsl */`
+const waterFragmentShader = /* glsl */ `
     uniform vec3 color;
     uniform sampler2D tDiffuse;
+    uniform sampler2D tDudv;
+    uniform float time;
     varying vec4 vUv;
 
     #include <logdepthbuf_pars_fragment>
 
-    float blendOverlay( float base, float blend ) {
-        return( base < 0.5 ? ( 2.0 * base * blend ) : ( 1.0 - 2.0 * ( 1.0 - base ) * ( 1.0 - blend ) ) );
-    }
-
-    vec3 blendOverlay( vec3 base, vec3 blend ) {
-        return vec3( blendOverlay( base.r, blend.r ), blendOverlay( base.g, blend.g ), blendOverlay( base.b, blend.b ) );
-    }
-
     void main() {
         #include <logdepthbuf_fragment>
-        vec4 base = texture2DProj( tDiffuse, vUv );
-        gl_FragColor = vec4( blendOverlay( base.rgb, color ), 1.0 );
+        float waveStrength = 0.5;
+        float waveSpeed = 0.03;
+        
+        // simple distortion (ripple) via dudv map
+        vec2 distortedUv = texture2D( tDudv, vec2( vUv.x + time * waveSpeed, vUv.y ) ).rg * waveStrength;
+        distortedUv = vUv.xy + vec2( distortedUv.x, distortedUv.y + time * waveSpeed );
+        vec2 distortion = ( texture2D( tDudv, distortedUv ).rg * 2.0 - 1.0 ) * waveStrength;
+        
+        // new uv coords
+        vec4 uv = vec4( vUv );
+        uv.xy += distortion;
+        vec4 base = texture2DProj( tDiffuse, uv );  // Changed from vUv to uv to use distortion
+        gl_FragColor = vec4( mix( base.rgb, color, 0.5 ), 1.0 );
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
     }
@@ -102,6 +107,8 @@ const seaFloorMaterial = new THREE.MeshStandardMaterial({
 const seaFloor = new THREE.Mesh(seaFloorGeometry, seaFloorMaterial);
 seaFloor.rotation.x = -0.5 * Math.PI;
 
+//scene.add(seaFloor);
+
 const directionalLight = new THREE.DirectionalLight(0xFFFFFF, 0.8);
 scene.add(directionalLight);
 directionalLight.position.set(-30, 50, 0);
@@ -114,26 +121,50 @@ scene.add(dLightHelper);
 const dLightShadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
 scene.add(dLightShadowHelper);
 
-const customShader = Reflector.ReflectorShader;
 
-customShader.vertexShader = waterVertexShader;
-customShader.fragmentShader = waterFragmentShader;
+// WATER (Mirror + Refraction)
+const loader = new THREE.TextureLoader();
+loader.load('./textures/waterdudv.jpg', function (dudvMap) {
+    dudvMap.wrapS = dudvMap.wrapT = THREE.RepeatWrapping;
 
-const mirrorGeometry = new THREE.CircleGeometry( 40, 64 );
-const groundMirror = new Reflector( mirrorGeometry, {
-    shader: customShader,
-    clipBias: 0.003,
-    textureWidth: window.innerWidth,
-    textureHeight: window.innerHeight,
-    color: 0xb5b5b5
-} );
-groundMirror.position.y = -10;
-groundMirror.rotateX( - Math.PI / 2 );
-scene.add( groundMirror );
+    // Clone the shader to avoid modifying the original
+    const customShader = {
+        uniforms: {
+            // Copy existing uniforms from ReflectorShader
+            ...JSON.parse(JSON.stringify(Reflector.ReflectorShader.uniforms)),
+            tDudv: { value: dudvMap },
+            time: { value: 0 },
+        },
+        vertexShader: waterVertexShader,
+        fragmentShader: waterFragmentShader,
+    };
+
+    // Properly set up uniforms that can't be JSON cloned
+    customShader.uniforms.color = { value: null };
+    customShader.uniforms.tDiffuse = { value: null };
+    customShader.uniforms.textureMatrix = { value: null };
+
+    const mirrorGeometry = new THREE.CircleGeometry(40, 64);
+    const groundMirror = new Reflector(mirrorGeometry, {
+        shader: customShader,
+        clipBias: 0.003,
+        textureWidth: window.innerWidth,
+        textureHeight: window.innerHeight,
+        color: 0xb5b5b5,
+    });
+    groundMirror.position.y = -10;
+    groundMirror.rotateX(-Math.PI / 2);
+    scene.add(groundMirror);
+
+    // Store reference to update time in animate loop
+    window.waterShader = customShader;
+},undefined, function (error){
+    console.log(error)
+});
 
 
 
-scene.add(seaFloor);
+
 
 
 function animate() {
