@@ -58,6 +58,16 @@ assetLoader.load(
         console.log(error);
     }
 );
+// Sea Floor (below the water)
+const seaFloorGeometry = new THREE.PlaneGeometry(100, 100);
+const seaFloorMaterial = new THREE.MeshStandardMaterial({
+    color: 0xbbbf72,
+    side: THREE.DoubleSide
+});
+const seaFloor = new THREE.Mesh(seaFloorGeometry, seaFloorMaterial);
+seaFloor.rotation.x = -0.5 * Math.PI;
+seaFloor.position.y = -2; // Below the water surface
+scene.add(seaFloor);
 
 // SkyBox loader
 // Load skybox textures
@@ -106,6 +116,7 @@ const waterFragmentShader = /* glsl */ `
     uniform sampler2D tDiffuse;
     uniform sampler2D tDudv;
     uniform float time;
+    //uniform float opacity;
     varying vec4 vUv;
 
     #include <logdepthbuf_pars_fragment>
@@ -135,6 +146,12 @@ const waterFragmentShader = /* glsl */ `
         
         // Mix reflection with water color
         gl_FragColor = vec4( mix( base.rgb, color, 0.3 ), 1.0 );
+        
+        // Mix reflection with water color, then apply opacity
+        //vec3 waterColor = mix( base.rgb, color, 0.3 );
+        
+        // Output with transparency (opacity controls see-through amount)
+        //gl_FragColor = vec4( waterColor, opacity );
         
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -182,6 +199,38 @@ loader.load(
         groundMirror.position.y = 5;
         groundMirror.rotateX(-Math.PI / 2);
         scene.add(groundMirror);
+
+        /*
+        const customShader = {
+            name: 'WaterReflectorShader',
+            uniforms: {
+                color: { value: null },
+                tDiffuse: { value: null },
+                textureMatrix: { value: null },
+                tDudv: { value: dudvMap },
+                time: { value: 0 },
+                opacity: { value: 0.7 }, // 0 = fully transparent, 1 = fully opaque
+            },
+            vertexShader: waterVertexShader,
+            fragmentShader: waterFragmentShader,
+        };
+
+        const mirrorGeometry = new THREE.CircleGeometry(40, 64);
+        groundMirror = new Reflector(mirrorGeometry, {
+            shader: customShader,
+            clipBias: 0.003,
+            textureWidth: window.innerWidth * window.devicePixelRatio,
+            textureHeight: window.innerHeight * window.devicePixelRatio,
+            color: 0x0077be,
+        });
+
+        // Enable transparency on the material
+        groundMirror.material.transparent = true;
+
+        groundMirror.position.y = 0;
+        groundMirror.rotateX(-Math.PI / 2);
+        scene.add(groundMirror);
+         */
 
         console.log('Water mirror added to scene');
     },
