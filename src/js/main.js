@@ -1,29 +1,15 @@
 import * as THREE from 'three';
-import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
-import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
-import { WaterRefractionShader } from 'three/examples/jsm/shaders/WaterRefractionShader.js';
+
 
 const buildingURL = new URL('../model/little_house_in_lotus_island/test1.glb', import.meta.url);
 
-const assetLoader = new GLTFLoader();
-
-let mixer;
-assetLoader.load(buildingURL.href, function(gltf) {
-    const model = gltf.scene;
-    console.log(model.children[1].material.opacity)
-    scene.add(model);
-    model.position.set(0, 7, 0);
-    }, undefined,
-    function (error)
-    {console.log(error);
-    });
-
-const renderer = new THREE.WebGLRenderer({antialias: true});
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
-
-renderer.setClearColor(0xffffff)
+renderer.setClearColor(0x87ceeb); // Sky blue so we can see reflection
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(
@@ -33,25 +19,74 @@ const camera = new THREE.PerspectiveCamera(
     1000
 );
 
-// Sets orbit control to move the camera around.
 const orbit = new OrbitControls(camera, renderer.domElement);
-
-// Camera positioning.
 camera.position.set(6, 8, 14);
-
-// Has to be done everytime we update the camera position.
 orbit.update();
 
-// Creates a 12 by 12 grid helper.
 const gridHelper = new THREE.GridHelper(100, 100);
 scene.add(gridHelper);
 
-// Creates an axes helper with an axis length of 4.
 const axesHelper = new THREE.AxesHelper(4);
 scene.add(axesHelper);
 
+// Add a cube so we have something to reflect
+const cubeGeometry = new THREE.BoxGeometry(2, 2, 2);
+const cubeMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+cube.position.set(0, 3, 0);
+scene.add(cube);
 
-/* ---------------------- SHADERS ---------------------- */
+// Lighting
+const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+directionalLight.position.set(-30, 50, 0);
+scene.add(directionalLight);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+
+// GLTF Loader
+const assetLoader = new GLTFLoader();
+assetLoader.load(
+    buildingURL.href,
+    function (gltf) {
+        const model = gltf.scene;
+        scene.add(model);
+        model.position.set(0, 7, 0);
+    },
+    undefined,
+    function (error) {
+        console.log(error);
+    }
+);
+
+// SkyBox loader
+// Load skybox textures
+const ftURL = new URL('../texture/Daylight Box_Front.bmp', import.meta.url);
+const bkURL = new URL('../texture/Daylight Box_Back.bmp', import.meta.url);
+const upURL = new URL('../texture/Daylight Box_Top.bmp', import.meta.url);
+const dnURL = new URL('../texture/Daylight Box_Bottom.bmp', import.meta.url);
+const rtURL = new URL('../texture/Daylight Box_Right.bmp', import.meta.url);
+const lfURL = new URL('../texture/Daylight Box_Left.bmp', import.meta.url);
+
+const cubeTextureLoader = new THREE.CubeTextureLoader();
+
+const skyboxTexture = cubeTextureLoader.load(
+    [
+        rtURL.href,
+        lfURL.href,
+        upURL.href,
+        dnURL.href,
+        ftURL.href,
+        bkURL.href,
+    ],
+    () => console.log('Skybox loaded successfully!'),
+    undefined,
+    (error) => console.error('Error loading skybox:', error)
+);
+
+scene.background = skyboxTexture;
+scene.fog = new THREE.FogExp2(0xFFFFFF, 0.01);
+/* ---------------------- WATER SHADERS ---------------------- */
 const waterVertexShader = /* glsl */ `
     uniform mat4 textureMatrix;
     varying vec4 vUv;
@@ -77,103 +112,108 @@ const waterFragmentShader = /* glsl */ `
 
     void main() {
         #include <logdepthbuf_fragment>
-        float waveStrength = 0.5;
+        
+        float waveStrength = 0.1;
         float waveSpeed = 0.03;
         
-        // simple distortion (ripple) via dudv map
-        vec2 distortedUv = texture2D( tDudv, vec2( vUv.x + time * waveSpeed, vUv.y ) ).rg * waveStrength;
-        distortedUv = vUv.xy + vec2( distortedUv.x, distortedUv.y + time * waveSpeed );
+        // Calculate UV for dudv lookup (use xy components, normalized)
+        vec2 dudvUv = vUv.xy / vUv.w;
+        
+        // First pass distortion
+        vec2 distortedUv = texture2D( tDudv, vec2( dudvUv.x + time * waveSpeed, dudvUv.y ) ).rg * waveStrength;
+        distortedUv = dudvUv + vec2( distortedUv.x, distortedUv.y + time * waveSpeed );
+        
+        // Second pass distortion
         vec2 distortion = ( texture2D( tDudv, distortedUv ).rg * 2.0 - 1.0 ) * waveStrength;
         
-        // new uv coords
-        vec4 uv = vec4( vUv );
-        uv.xy += distortion;
-        vec4 base = texture2DProj( tDiffuse, uv );  // Changed from vUv to uv to use distortion
-        gl_FragColor = vec4( mix( base.rgb, color, 0.5 ), 1.0 );
+        // Apply distortion to reflection UV
+        vec4 uv = vUv;
+        uv.xy += distortion * uv.w;
+        
+        // Sample reflection texture with distortion
+        vec4 base = texture2DProj( tDiffuse, uv );
+        
+        // Mix reflection with water color
+        gl_FragColor = vec4( mix( base.rgb, color, 0.3 ), 1.0 );
+        
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
     }
 `;
 
-/* ---------------------- SCENE ---------------------- */
+/* ---------------------- WATER SETUP ---------------------- */
 
+// Use URL constructor for proper Parcel asset handling
+const dudvURL = new URL('../texture/waterdudv.jpg', import.meta.url);
 
-// Sea Floor
-const seaFloorGeometry = new THREE.PlaneGeometry(100,100);
-const seaFloorMaterial = new THREE.MeshStandardMaterial({
-    color: 0xBBBF72,
-    side: THREE.DoubleSide
-});
-const seaFloor = new THREE.Mesh(seaFloorGeometry, seaFloorMaterial);
-seaFloor.rotation.x = -0.5 * Math.PI;
-
-//scene.add(seaFloor);
-
-const directionalLight = new THREE.DirectionalLight(0xFFFFFF, 0.8);
-scene.add(directionalLight);
-directionalLight.position.set(-30, 50, 0);
-directionalLight.castShadow = true;
-directionalLight.shadow.camera.bottom = -12;
-
-const dLightHelper = new THREE.DirectionalLightHelper(directionalLight, 5);
-scene.add(dLightHelper);
-
-const dLightShadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
-scene.add(dLightShadowHelper);
-
-
-// WATER (Mirror + Refraction)
 const loader = new THREE.TextureLoader();
-loader.load('./textures/waterdudv.jpg', function (dudvMap) {
-    dudvMap.wrapS = dudvMap.wrapT = THREE.RepeatWrapping;
+let groundMirror;
 
-    // Clone the shader to avoid modifying the original
-    const customShader = {
-        uniforms: {
-            // Copy existing uniforms from ReflectorShader
-            ...JSON.parse(JSON.stringify(Reflector.ReflectorShader.uniforms)),
-            tDudv: { value: dudvMap },
-            time: { value: 0 },
-        },
-        vertexShader: waterVertexShader,
-        fragmentShader: waterFragmentShader,
-    };
+loader.load(
+    dudvURL.href,
+    function (dudvMap) {
+        console.log('DUDV texture loaded!', dudvMap);
 
-    // Properly set up uniforms that can't be JSON cloned
-    customShader.uniforms.color = { value: null };
-    customShader.uniforms.tDiffuse = { value: null };
-    customShader.uniforms.textureMatrix = { value: null };
+        dudvMap.wrapS = dudvMap.wrapT = THREE.RepeatWrapping;
+        dudvMap.repeat.set(4, 4); // Tile the texture for more visible waves
 
-    const mirrorGeometry = new THREE.CircleGeometry(40, 64);
-    const groundMirror = new Reflector(mirrorGeometry, {
-        shader: customShader,
-        clipBias: 0.003,
-        textureWidth: window.innerWidth,
-        textureHeight: window.innerHeight,
-        color: 0xb5b5b5,
-    });
-    groundMirror.position.y = -10;
-    groundMirror.rotateX(-Math.PI / 2);
-    scene.add(groundMirror);
+        const customShader = {
+            name: 'WaterReflectorShader',
+            uniforms: {
+                color: { value: null },
+                tDiffuse: { value: null },
+                textureMatrix: { value: null },
+                tDudv: { value: dudvMap },
+                time: { value: 0 },
+            },
+            vertexShader: waterVertexShader,
+            fragmentShader: waterFragmentShader,
+        };
 
-    // Store reference to update time in animate loop
-    window.waterShader = customShader;
-},undefined, function (error){
-    console.log(error)
-});
+        const mirrorGeometry = new THREE.CircleGeometry(40, 64);
+        groundMirror = new Reflector(mirrorGeometry, {
+            shader: customShader,
+            clipBias: 0.003,
+            textureWidth: window.innerWidth * window.devicePixelRatio,
+            textureHeight: window.innerHeight * window.devicePixelRatio,
+            color: 0x0077be, // Water blue color
+        });
 
+        groundMirror.position.y = 5;
+        groundMirror.rotateX(-Math.PI / 2);
+        scene.add(groundMirror);
 
+        console.log('Water mirror added to scene');
+    },
+    function (progress) {
+        console.log('Loading texture...', progress);
+    },
+    function (error) {
+        console.error('Error loading DUDV texture:', error);
+    }
+);
 
+/* ---------------------- ANIMATION ---------------------- */
 
-
+const clock = new THREE.Clock();
 
 function animate() {
+    const elapsedTime = clock.getElapsedTime();
+
+    // Rotate cube for visual feedback
+    cube.rotation.y = elapsedTime * 0.5;
+
+    // Update water shader time uniform
+    if (groundMirror && groundMirror.material.uniforms.time) {
+        groundMirror.material.uniforms.time.value = elapsedTime;
+    }
+
     renderer.render(scene, camera);
 }
 
 renderer.setAnimationLoop(animate);
 
-window.addEventListener('resize', function() {
+window.addEventListener('resize', function () {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
